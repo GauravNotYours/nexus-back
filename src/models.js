@@ -52,9 +52,11 @@ const notificationSchema = new mongoose.Schema({
   emergency: { type: mongoose.Schema.Types.ObjectId, ref: 'Emergency' },
   journey: { type: mongoose.Schema.Types.ObjectId, ref: 'Journey' },
   channel: { type: String, enum: ['SMS', 'IN_APP'], required: true },
-  status: { type: String, enum: ['SENT', 'QUEUED', 'FAILED'], required: true },
+  status: { type: String, enum: ['QUEUED', 'SENT', 'DELIVERED', 'FAILED'], required: true },
   message: { type: String, required: true, maxlength: 1600 },
   providerId: String,
+  providerStatus: String,
+  providerErrorCode: String,
   error: String,
 }, { timestamps: true });
 

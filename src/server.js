@@ -8,6 +8,7 @@ const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const twilio = require('twilio');
 const crypto = require('crypto');
+const { normalizePhoneNumber, mapProviderStatus, smsConfiguration } = require('./sms');
 const {
   User, TrustedContact, EmergencyService, RiskZone, Notification, Emergency, Journey,
 } = require('./models');
@@ -17,6 +18,7 @@ app.set('trust proxy', 1);
 app.use(helmet());
 app.use(cors({ origin: process.env.CLIENT_ORIGIN || '*', credentials: false }));
 app.use(express.json({ limit: '32kb' }));
+app.use(express.urlencoded({ extended: false, limit: '8kb' }));
 app.use('/api/auth', rateLimit({ windowMs: 15 * 60 * 1000, limit: 30 }));
 
 const asyncRoute = (handler) => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
@@ -66,26 +68,47 @@ async function notifyContact(ownerId, contact, message, related = {}) {
     owner: ownerId, contact: contact && contact._id, ...related, channel: 'SMS',
     status: 'QUEUED', message,
   };
-  const ready = process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER;
-  if (ready && contact) {
+  const notification = await Notification.create(log);
+  const config = smsConfiguration();
+  if (config.enabled && contact) {
     try {
+      const from = normalizePhoneNumber(process.env.TWILIO_FROM_NUMBER, config.defaultCountryCode);
+      const to = normalizePhoneNumber(contact.phone, config.defaultCountryCode);
       const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
       const sent = await client.messages.create({
-        body: message, from: process.env.TWILIO_FROM_NUMBER, to: contact.phone,
+        body: message,
+        from,
+        to,
+        statusCallback: `${publicBaseUrl()}/api/webhooks/twilio/status`,
       });
-      log.status = 'SENT';
-      log.providerId = sent.sid;
+      notification.status = mapProviderStatus(sent.status);
+      notification.providerStatus = sent.status;
+      notification.providerId = sent.sid;
     } catch (error) {
-      log.status = 'FAILED';
-      log.error = error.message;
-      console.error('SMS delivery failed:', error.message);
+      notification.status = 'FAILED';
+      notification.error = error.message || 'Twilio rejected the SMS request.';
+      notification.providerErrorCode = error.code ? String(error.code) : undefined;
+      console.error('SMS delivery failed:', {
+        contactId: contact._id,
+        providerCode: notification.providerErrorCode,
+        message: notification.error,
+      });
     }
-  } else if (!contact) {
-    log.status = 'FAILED';
-    log.error = 'No eligible trusted contact is configured.';
+  } else {
+    notification.status = 'FAILED';
+    notification.error = !contact
+      ? 'No eligible trusted contact is configured.'
+      : `Twilio is not configured. Missing Render environment variables: ${config.missing.join(', ')}.`;
   }
-  await Notification.create(log);
-  return { name: contact ? contact.name : '', phone: contact ? contact.phone : '', status: log.status };
+  await notification.save();
+  return {
+    name: contact ? contact.name : '',
+    phone: contact ? contact.phone : '',
+    status: notification.status,
+    ...(notification.providerStatus ? { providerStatus: notification.providerStatus } : {}),
+    ...(notification.providerErrorCode ? { errorCode: notification.providerErrorCode } : {}),
+    ...(notification.error ? { error: notification.error } : {}),
+  };
 }
 
 const router = express.Router();
@@ -175,7 +198,34 @@ router.post('/contacts/:id/test-ping', auth, asyncRoute(async (req, res) => {
   if (!contact) throw fail(404, 'Trusted contact not found.');
   const owner = await User.findById(req.userId);
   const sent = await notifyContact(req.userId, contact, `Suraksha test: ${owner.name} has added you as a safety contact.`);
-  res.json({ message: sent.status === 'SENT' ? 'Test SMS sent.' : 'Notification recorded; configure Twilio to deliver SMS.', status: sent.status });
+  res.json({
+    status: sent.status,
+    message: sent.status === 'FAILED'
+      ? `SMS was not sent: ${sent.error}`
+      : sent.status === 'DELIVERED'
+        ? 'Test SMS was delivered.'
+        : `Twilio accepted the message (${sent.providerStatus || sent.status}). Delivery status may update shortly.`,
+    ...(sent.error ? { error: sent.error } : {}),
+    ...(sent.providerStatus ? { providerStatus: sent.providerStatus } : {}),
+  });
+}));
+
+router.get('/sms/status', auth, asyncRoute(async (req, res) => {
+  const config = smsConfiguration();
+  const latest = await Notification.findOne({ owner: req.userId, channel: 'SMS' })
+    .sort({ createdAt: -1 })
+    .select('status error providerStatus createdAt');
+  res.json({
+    configured: config.enabled,
+    missingEnvironmentVariables: config.missing,
+    defaultCountryCode: config.defaultCountryCode,
+    latest: latest ? {
+      status: latest.status,
+      error: latest.error,
+      providerStatus: latest.providerStatus,
+      createdAt: latest.createdAt,
+    } : null,
+  });
 }));
 
 router.post('/services/nearby', auth, asyncRoute(async (req, res) => {
@@ -349,6 +399,30 @@ router.post('/journeys/:id/cancel', auth, asyncRoute(async (req, res) => {
 
 router.get('/notifications', auth, asyncRoute(async (req, res) => {
   res.json(await Notification.find({ owner: req.userId }).sort({ createdAt: -1 }).limit(100));
+}));
+
+router.post('/webhooks/twilio/status', asyncRoute(async (req, res) => {
+  const signature = req.get('X-Twilio-Signature') || '';
+  const callbackUrl = `${publicBaseUrl()}/api/webhooks/twilio/status`;
+  const validSignature = twilio.validateRequest(
+    process.env.TWILIO_AUTH_TOKEN || '',
+    signature,
+    callbackUrl,
+    req.body,
+  );
+  if (!validSignature) throw fail(403, 'Invalid Twilio webhook signature.');
+
+  const messageSid = String(req.body.MessageSid || '');
+  const providerStatus = String(req.body.MessageStatus || '').toLowerCase();
+  if (!messageSid || !providerStatus) throw fail(400, 'Twilio message id and status are required.');
+  const update = {
+    status: mapProviderStatus(providerStatus),
+    providerStatus,
+    providerErrorCode: req.body.ErrorCode ? String(req.body.ErrorCode) : undefined,
+    ...(req.body.ErrorMessage ? { error: String(req.body.ErrorMessage).slice(0, 1000) } : {}),
+  };
+  await Notification.updateOne({ providerId: messageSid }, { $set: update });
+  res.sendStatus(204);
 }));
 
 app.use('/api', router);

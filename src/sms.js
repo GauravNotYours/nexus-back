@@ -1,0 +1,42 @@
+function normalizePhoneNumber(input, defaultCountryCode = '+91') {
+  const original = String(input || '').trim();
+  if (!original || /[^\d+\s().-]/.test(original)) {
+    throw new Error('Enter a phone number using digits and an optional country code.');
+  }
+
+  let normalized = original.replace(/[\s().-]/g, '');
+  if (normalized.startsWith('00')) normalized = `+${normalized.slice(2)}`;
+
+  if (!normalized.startsWith('+')) {
+    let digits = normalized.replace(/\D/g, '');
+    const countryCode = String(defaultCountryCode).replace(/\D/g, '');
+    if (!countryCode || countryCode.length > 3) throw new Error('SMS_DEFAULT_COUNTRY_CODE must be a country calling code, such as +91.');
+    digits = digits.replace(/^0+/, '');
+    if (digits.startsWith(countryCode) && digits.length > 10) normalized = `+${digits}`;
+    else normalized = `+${countryCode}${digits}`;
+  }
+
+  if (!/^\+[1-9]\d{7,14}$/.test(normalized)) {
+    throw new Error(`Phone number "${original}" is not valid in international E.164 format. Include the country code, such as +919876543210.`);
+  }
+  return normalized;
+}
+
+function mapProviderStatus(status) {
+  if (status === 'delivered' || status === 'read') return 'DELIVERED';
+  if (status === 'sent') return 'SENT';
+  if (status === 'failed' || status === 'undelivered' || status === 'canceled') return 'FAILED';
+  return 'QUEUED';
+}
+
+function smsConfiguration(env = process.env) {
+  const required = ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM_NUMBER'];
+  const missing = required.filter((key) => !String(env[key] || '').trim());
+  return {
+    enabled: missing.length === 0,
+    missing,
+    defaultCountryCode: env.SMS_DEFAULT_COUNTRY_CODE || '+91',
+  };
+}
+
+module.exports = { normalizePhoneNumber, mapProviderStatus, smsConfiguration };

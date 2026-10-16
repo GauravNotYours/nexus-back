@@ -10,7 +10,17 @@ Node.js/Express API backed by MongoDB. The API is the source of truth for accoun
 4. Run `npm run seed` once to add example emergency-service and risk-zone records. Review and replace those records with verified local information before relying on them.
 5. Run `npm run dev`. Health check: `http://localhost:10000/api/health`.
 
-SMS is optional. To actually send SMS, set `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and `TWILIO_FROM_NUMBER`; without them the API records notifications as `QUEUED` and explicitly reports that delivery is not configured. Missed check-ins are processed by a backend job every 15 seconds: first the configured trusted contact is notified, then an emergency record is created after the grace period if the user still has not checked in.
+SMS is optional. To send SMS, configure these Render environment variables and redeploy:
+
+- `TWILIO_ACCOUNT_SID`: account SID from the Twilio Console.
+- `TWILIO_AUTH_TOKEN`: secret auth token from the Twilio Console. Keep it private.
+- `TWILIO_FROM_NUMBER`: an SMS-enabled Twilio number in E.164 format, such as `+15551234567`.
+- `SMS_DEFAULT_COUNTRY_CODE`: calling code used for contacts entered without a country code; defaults to `+91` (India).
+- `PUBLIC_BASE_URL`: the public HTTPS origin of this Render service; Twilio uses it for delivery callbacks.
+
+Add a trusted contact's real, consenting number. It is normalized to E.164 before sending. On a Twilio trial account, recipients may need to be verified; country permissions, sender capabilities, account balance, and carrier filtering also affect delivery. The app's **Test SMS** action shows the provider acceptance/failure and the backend records the exact provider error. A queued message is not reported as delivered; Twilio delivery callbacks update the stored status to sent, delivered, or failed. Use the Twilio Console's Messaging Logs to inspect carrier/provider status.
+
+Missed check-ins are processed by a backend job every 15 seconds: first the configured trusted contact is notified, then an emergency record is created after the grace period if the user still has not checked in.
 
 ## Deploy on Render
 
