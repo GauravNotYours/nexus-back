@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { mapProviderStatus, normalizePhoneNumber, smsConfiguration } = require('../src/sms');
+const { explainTwilioError, mapProviderStatus, normalizePhoneNumber, smsConfiguration } = require('../src/sms');
 
 test('phone numbers are normalized for Twilio', () => {
   assert.equal(normalizePhoneNumber('98765 43210'), '+919876543210');
@@ -31,4 +31,9 @@ test('SMS configuration reports missing Render environment variables', () => {
     TWILIO_AUTH_TOKEN: 'secret',
     TWILIO_FROM_NUMBER: '+15551234567',
   }).enabled, true);
+});
+
+test('trial-recipient and blocked-country errors explain how to fix Twilio settings', () => {
+  assert.match(explainTwilioError({ code: 21608 }, '+919876543210'), /verified recipients/);
+  assert.match(explainTwilioError({ code: 21408 }, '+919876543210'), /destination country/);
 });

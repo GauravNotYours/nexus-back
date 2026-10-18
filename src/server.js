@@ -8,7 +8,7 @@ const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const twilio = require('twilio');
 const crypto = require('crypto');
-const { normalizePhoneNumber, mapProviderStatus, smsConfiguration } = require('./sms');
+const { normalizePhoneNumber, mapProviderStatus, smsConfiguration, explainTwilioError } = require('./sms');
 const {
   User, TrustedContact, EmergencyService, RiskZone, Notification, Emergency, Journey,
 } = require('./models');
@@ -70,15 +70,16 @@ async function notifyContact(ownerId, contact, message, related = {}) {
   };
   const notification = await Notification.create(log);
   const config = smsConfiguration();
+  let normalizedTo = contact ? contact.phone : '';
   if (config.enabled && contact) {
     try {
       const from = normalizePhoneNumber(process.env.TWILIO_FROM_NUMBER, config.defaultCountryCode);
-      const to = normalizePhoneNumber(contact.phone, config.defaultCountryCode);
+      normalizedTo = normalizePhoneNumber(contact.phone, config.defaultCountryCode);
       const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
       const sent = await client.messages.create({
         body: message,
         from,
-        to,
+        to: normalizedTo,
         statusCallback: `${publicBaseUrl()}/api/webhooks/twilio/status`,
       });
       notification.status = mapProviderStatus(sent.status);
@@ -86,7 +87,7 @@ async function notifyContact(ownerId, contact, message, related = {}) {
       notification.providerId = sent.sid;
     } catch (error) {
       notification.status = 'FAILED';
-      notification.error = error.message || 'Twilio rejected the SMS request.';
+      notification.error = explainTwilioError(error, normalizedTo);
       notification.providerErrorCode = error.code ? String(error.code) : undefined;
       console.error('SMS delivery failed:', {
         contactId: contact._id,

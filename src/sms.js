@@ -39,4 +39,21 @@ function smsConfiguration(env = process.env) {
   };
 }
 
-module.exports = { normalizePhoneNumber, mapProviderStatus, smsConfiguration };
+function explainTwilioError(error, recipient) {
+  const code = String(error && error.code || '');
+  if (code === '21608') {
+    return `Twilio trial accounts can only message verified recipients. Verify ${recipient} in the Twilio Console under Phone Numbers > Manage > Verified Caller IDs, or upgrade the Twilio account.`;
+  }
+  if (code === '21408') {
+    return `Twilio is not enabled to send messages to this destination country. Enable the destination under Twilio Console > Messaging > Settings > Geo Permissions.`;
+  }
+  if (code === '21211') {
+    return `Twilio rejected recipient number ${recipient}. Check that it is a valid number with its country code.`;
+  }
+  if (code === '21606' || code === '21659') {
+    return 'Twilio rejected the sender number. Confirm TWILIO_FROM_NUMBER is an active SMS-capable Twilio number.';
+  }
+  return error && error.message || 'Twilio rejected the SMS request.';
+}
+
+module.exports = { normalizePhoneNumber, mapProviderStatus, smsConfiguration, explainTwilioError };
