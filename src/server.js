@@ -9,7 +9,7 @@ const rateLimit = require('express-rate-limit');
 const twilio = require('twilio');
 const crypto = require('crypto');
 const { normalizePhoneNumber, mapProviderStatus, smsConfiguration, explainTwilioError } = require('./sms');
-const { fcmConfiguration, sendPush } = require('./fcm');
+const { fcmConfiguration, registeredPushTokens, sendPush } = require('./fcm');
 const {
   User, TrustedContact, EmergencyService, RiskZone, Notification, Emergency, Journey,
 } = require('./models');
@@ -73,21 +73,23 @@ async function notifyContactPush(ownerId, contact, message, related = {}, pushDa
     return null;
   }
   const recipient = await User.findOne({ phoneNormalized: phone }).select('pushTokens');
-  if (!recipient || !recipient.pushTokens.length) return null;
+  const tokens = registeredPushTokens(recipient);
+  if (!tokens.length) return null;
 
   const notification = await Notification.create({
     owner: ownerId, contact: contact._id, ...related, channel: 'PUSH',
     status: 'QUEUED', message,
   });
   try {
-    const result = await sendPush(recipient.pushTokens.map((device) => device.token), {
+    const result = await sendPush(tokens, {
       title: pushData.title || 'Suraksha safety alert',
       body: pushData.body || message,
       url: pushData.url,
       emergencyId: pushData.emergencyId,
     });
     if (result.invalidTokens.length) {
-      recipient.pushTokens = recipient.pushTokens.filter((device) => !result.invalidTokens.includes(device.token));
+      recipient.pushTokens = (Array.isArray(recipient.pushTokens) ? recipient.pushTokens : [])
+        .filter((device) => device && !result.invalidTokens.includes(device.token));
       await recipient.save();
     }
     notification.status = result.successCount ? 'SENT' : 'FAILED';
@@ -229,7 +231,8 @@ router.post('/devices/register', auth, asyncRoute(async (req, res) => {
   const user = await User.findById(req.userId);
   if (!user) throw fail(404, 'User account was not found.');
   try { user.phoneNormalized = normalizePhoneNumber(user.phone, process.env.SMS_DEFAULT_COUNTRY_CODE || '+91'); } catch (error) { throw fail(400, error.message); }
-  user.pushTokens = user.pushTokens.filter((device) => device.token !== token);
+  user.pushTokens = (Array.isArray(user.pushTokens) ? user.pushTokens : [])
+    .filter((device) => device && device.token !== token);
   user.pushTokens.push({ token, platform, updatedAt: new Date() });
   user.pushTokens = user.pushTokens.slice(-10);
   await user.save();

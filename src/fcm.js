@@ -6,6 +6,13 @@ function fcmConfiguration(env = process.env) {
   return { enabled: missing.length === 0, missing };
 }
 
+function registeredPushTokens(user) {
+  const devices = Array.isArray(user && user.pushTokens) ? user.pushTokens : [];
+  return devices
+    .map((device) => device && device.token)
+    .filter((token) => typeof token === 'string' && token.trim().length > 0);
+}
+
 function firebaseMessaging(env = process.env) {
   const config = fcmConfiguration(env);
   if (!config.enabled) {
@@ -25,6 +32,7 @@ function firebaseMessaging(env = process.env) {
 }
 
 async function sendPush(tokens, { title, body, url, emergencyId }, env = process.env) {
+  if (!Array.isArray(tokens)) throw new TypeError('FCM device tokens must be an array.');
   if (!tokens.length) return { successCount: 0, failureCount: 0, invalidTokens: [], errors: [] };
   const response = await firebaseMessaging(env).sendEachForMulticast({
     tokens,
@@ -50,4 +58,4 @@ async function sendPush(tokens, { title, body, url, emergencyId }, env = process
   };
 }
 
-module.exports = { fcmConfiguration, sendPush };
+module.exports = { fcmConfiguration, registeredPushTokens, sendPush };
