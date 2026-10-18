@@ -9,6 +9,7 @@ const rateLimit = require('express-rate-limit');
 const twilio = require('twilio');
 const crypto = require('crypto');
 const { normalizePhoneNumber, mapProviderStatus, smsConfiguration, explainTwilioError } = require('./sms');
+const { fcmConfiguration, sendPush } = require('./fcm');
 const {
   User, TrustedContact, EmergencyService, RiskZone, Notification, Emergency, Journey,
 } = require('./models');
@@ -63,7 +64,59 @@ const objectId = (value) => {
   return value;
 };
 
+async function notifyContactPush(ownerId, contact, message, related = {}, pushData = {}) {
+  if (!fcmConfiguration().enabled) return null;
+  let phone;
+  try {
+    phone = normalizePhoneNumber(contact.phone, process.env.SMS_DEFAULT_COUNTRY_CODE || '+91');
+  } catch {
+    return null;
+  }
+  const recipient = await User.findOne({ phoneNormalized: phone }).select('pushTokens');
+  if (!recipient || !recipient.pushTokens.length) return null;
+
+  const notification = await Notification.create({
+    owner: ownerId, contact: contact._id, ...related, channel: 'PUSH',
+    status: 'QUEUED', message,
+  });
+  try {
+    const result = await sendPush(recipient.pushTokens.map((device) => device.token), {
+      title: pushData.title || 'Suraksha safety alert',
+      body: pushData.body || message,
+      url: pushData.url,
+      emergencyId: pushData.emergencyId,
+    });
+    if (result.invalidTokens.length) {
+      recipient.pushTokens = recipient.pushTokens.filter((device) => !result.invalidTokens.includes(device.token));
+      await recipient.save();
+    }
+    notification.status = result.successCount ? 'SENT' : 'FAILED';
+    notification.providerStatus = result.successCount ? 'FCM_ACCEPTED' : undefined;
+    notification.error = result.errors.length ? result.errors.join('; ').slice(0, 1000) : undefined;
+  } catch (error) {
+    notification.status = 'FAILED';
+    notification.error = error.message || 'Firebase Cloud Messaging rejected the push notification.';
+  }
+  await notification.save();
+  return {
+    name: contact.name,
+    phone,
+    status: notification.status,
+    channel: 'PUSH',
+    ...(notification.providerStatus ? { providerStatus: notification.providerStatus } : {}),
+    ...(notification.error ? { error: notification.error } : {}),
+  };
+}
+
 async function notifyContact(ownerId, contact, message, related = {}) {
+  const push = await notifyContactPush(ownerId, contact, message, related, {
+    title: 'Emergency SOS',
+    body: message,
+    url: related.url,
+    emergencyId: related.emergency && String(related.emergency),
+  });
+  if (push && push.status === 'SENT') return push;
+
   const log = {
     owner: ownerId, contact: contact && contact._id, ...related, channel: 'SMS',
     status: 'QUEUED', message,
@@ -122,8 +175,10 @@ router.post('/auth/register', asyncRoute(async (req, res) => {
   if (String(password).length < 8) throw fail(400, 'Password must be at least 8 characters.');
   if (!/^\d{4}$/.test(String(emergencyPin))) throw fail(400, 'Emergency PIN must contain exactly 4 digits.');
   if (await User.exists({ email: String(email).trim().toLowerCase() })) throw fail(409, 'An account already exists for this email.');
+  let phoneNormalized;
+  try { phoneNormalized = normalizePhoneNumber(phone, process.env.SMS_DEFAULT_COUNTRY_CODE || '+91'); } catch (error) { throw fail(400, error.message); }
   const user = await User.create({
-    name, email, phone, passwordHash: await bcrypt.hash(password, 12),
+    name, email, phone, phoneNormalized, passwordHash: await bcrypt.hash(password, 12),
     emergencyPinHash: await bcrypt.hash(emergencyPin, 12),
   });
   res.status(201).json({ user: asPublicUser(user), token: tokenFor(user) });
@@ -131,8 +186,10 @@ router.post('/auth/register', asyncRoute(async (req, res) => {
 
 router.post('/auth/login', asyncRoute(async (req, res) => {
   const identifier = String((req.body || {}).identifier || '').trim();
+  let normalizedPhone;
+  try { normalizedPhone = normalizePhoneNumber(identifier, process.env.SMS_DEFAULT_COUNTRY_CODE || '+91'); } catch { normalizedPhone = ''; }
   const user = await User.findOne({
-    $or: [{ email: identifier.toLowerCase() }, { phone: identifier }],
+    $or: [{ email: identifier.toLowerCase() }, { phone: identifier }, ...(normalizedPhone ? [{ phoneNormalized: normalizedPhone }] : [])],
   }).select('+passwordHash');
   if (!user || !await bcrypt.compare(String((req.body || {}).password || ''), user.passwordHash)) throw fail(401, 'Email/phone or password is incorrect.');
   res.json({ user: asPublicUser(user), token: tokenFor(user) });
@@ -148,6 +205,9 @@ router.put('/auth/profile', auth, asyncRoute(async (req, res) => {
   const allowed = ['name', 'phone', 'bloodType', 'medicalNotes'];
   const updates = {};
   for (const field of allowed) if (req.body && req.body[field] !== undefined) updates[field] = req.body[field];
+  if (updates.phone) {
+    try { updates.phoneNormalized = normalizePhoneNumber(updates.phone, process.env.SMS_DEFAULT_COUNTRY_CODE || '+91'); } catch (error) { throw fail(400, error.message); }
+  }
   const user = await User.findByIdAndUpdate(req.userId, updates, { new: true, runValidators: true });
   res.json(asPublicUser(user));
 }));
@@ -160,6 +220,32 @@ router.put('/auth/pin', auth, asyncRoute(async (req, res) => {
   user.emergencyPinHash = await bcrypt.hash(newPin, 12);
   await user.save();
   res.json({ message: 'Emergency PIN updated.' });
+}));
+
+router.post('/devices/register', auth, asyncRoute(async (req, res) => {
+  const { token, platform } = req.body || {};
+  if (typeof token !== 'string' || token.length < 20 || token.length > 4096) throw fail(400, 'A valid FCM device token is required.');
+  if (!['android', 'ios'].includes(platform)) throw fail(400, 'Device platform must be android or ios.');
+  const user = await User.findById(req.userId);
+  if (!user) throw fail(404, 'User account was not found.');
+  try { user.phoneNormalized = normalizePhoneNumber(user.phone, process.env.SMS_DEFAULT_COUNTRY_CODE || '+91'); } catch (error) { throw fail(400, error.message); }
+  user.pushTokens = user.pushTokens.filter((device) => device.token !== token);
+  user.pushTokens.push({ token, platform, updatedAt: new Date() });
+  user.pushTokens = user.pushTokens.slice(-10);
+  await user.save();
+  res.json({ registered: true, platform });
+}));
+
+router.delete('/devices/register', auth, asyncRoute(async (req, res) => {
+  const { token } = req.body || {};
+  if (typeof token !== 'string' || !token) throw fail(400, 'Device token is required.');
+  await User.updateOne({ _id: req.userId }, { $pull: { pushTokens: { token } } });
+  res.json({ registered: false });
+}));
+
+router.get('/push/status', auth, asyncRoute(async (req, res) => {
+  const config = fcmConfiguration();
+  res.json({ configured: config.enabled, missingEnvironmentVariables: config.missing });
 }));
 
 router.get('/contacts', auth, asyncRoute(async (req, res) => {
@@ -208,6 +294,32 @@ router.post('/contacts/:id/test-ping', auth, asyncRoute(async (req, res) => {
         : `Twilio accepted the message (${sent.providerStatus || sent.status}). Delivery status may update shortly.`,
     ...(sent.error ? { error: sent.error } : {}),
     ...(sent.providerStatus ? { providerStatus: sent.providerStatus } : {}),
+  });
+}));
+
+router.post('/contacts/:id/test-push', auth, asyncRoute(async (req, res) => {
+  const contact = await TrustedContact.findOne({ _id: objectId(req.params.id), owner: req.userId });
+  if (!contact) throw fail(404, 'Trusted contact not found.');
+  const config = fcmConfiguration();
+  if (!config.enabled) {
+    return res.json({
+      status: 'FAILED',
+      message: `Firebase push is not configured on the backend. Missing environment variables: ${config.missing.join(', ')}.`,
+      channel: 'PUSH',
+    });
+  }
+  const owner = await User.findById(req.userId);
+  const sent = await notifyContactPush(req.userId, contact, `Suraksha test: ${owner.name} has added you as a safety contact.`, {}, {
+    title: 'Suraksha push test',
+    body: `${owner.name} is testing trusted-contact alerts.`,
+  });
+  res.json({
+    status: sent ? sent.status : 'FAILED',
+    message: sent
+      ? sent.status === 'SENT' ? 'Push notification accepted by Firebase.' : `Push notification failed: ${sent.error || 'Firebase rejected it.'}`
+      : 'This contact has not registered an Android/iOS Suraksha app with push notifications. They must install the app, create an account using this same phone number, and enable push alerts.',
+    ...(sent && sent.error ? { error: sent.error } : {}),
+    channel: 'PUSH',
   });
 }));
 
@@ -286,7 +398,7 @@ router.post('/emergency/sos', auth, asyncRoute(async (req, res) => {
   const contacts = await TrustedContact.find({ owner: req.userId, notifyOnSOS: true }).sort({ isPrimary: -1 });
   const shareUrl = `${publicBaseUrl()}/api/public/emergencies/${shareToken}`;
   const message = `SOS: ${owner.name} needs help. View their live location (expires in 24 hours): ${shareUrl}`;
-  const notifications = await Promise.all(contacts.map((contact) => notifyContact(req.userId, contact, message, { emergency: emergency._id })));
+  const notifications = await Promise.all(contacts.map((contact) => notifyContact(req.userId, contact, message, { emergency: emergency._id, url: shareUrl })));
   res.status(201).json({
     _id: String(emergency._id), emergencyId: String(emergency._id), activatedAt: emergency.activatedAt,
     status: 'ACTIVE', ...(point ? { coordinates: point } : {}), shareUrl, contactsNotified: notifications,

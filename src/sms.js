@@ -41,6 +41,14 @@ function smsConfiguration(env = process.env) {
 
 function explainTwilioError(error, recipient) {
   const code = String(error && error.code || '');
+  const providerMessage = String(error && error.message || '');
+  const normalizedMessage = providerMessage.toLowerCase();
+  if (
+    normalizedMessage.includes('invalid template name')
+    || (normalizedMessage.includes('trial account') && normalizedMessage.includes('predefined') && normalizedMessage.includes('template'))
+  ) {
+    return 'The SMS provider rejected this custom safety-alert message because this trial account only permits predefined SMS templates. Suraksha sends a personalized alert with a live-location link, which cannot be replaced with a generic trial template. Upgrade the provider account or configure an approved template that supports these alert details, then retry.';
+  }
   if (code === '21608') {
     return `Twilio trial accounts can only message verified recipients. Verify ${recipient} in the Twilio Console under Phone Numbers > Manage > Verified Caller IDs, or upgrade the Twilio account.`;
   }
@@ -53,7 +61,7 @@ function explainTwilioError(error, recipient) {
   if (code === '21606' || code === '21659') {
     return 'Twilio rejected the sender number. Confirm TWILIO_FROM_NUMBER is an active SMS-capable Twilio number.';
   }
-  return error && error.message || 'Twilio rejected the SMS request.';
+  return providerMessage || 'Twilio rejected the SMS request.';
 }
 
 module.exports = { normalizePhoneNumber, mapProviderStatus, smsConfiguration, explainTwilioError };

@@ -10,8 +10,14 @@ const userSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true, maxlength: 80 },
   email: { type: String, required: true, unique: true, lowercase: true, trim: true },
   phone: { type: String, required: true, trim: true },
+  phoneNormalized: { type: String, index: true, sparse: true },
   passwordHash: { type: String, required: true, select: false },
   emergencyPinHash: { type: String, required: true, select: false },
+  pushTokens: [{
+    token: { type: String, required: true },
+    platform: { type: String, enum: ['android', 'ios'], required: true },
+    updatedAt: { type: Date, default: Date.now },
+  }],
   bloodType: { type: String, default: '' },
   medicalNotes: { type: String, default: '', maxlength: 1000 },
 }, { timestamps: true });
@@ -51,7 +57,7 @@ const notificationSchema = new mongoose.Schema({
   contact: { type: mongoose.Schema.Types.ObjectId, ref: 'TrustedContact' },
   emergency: { type: mongoose.Schema.Types.ObjectId, ref: 'Emergency' },
   journey: { type: mongoose.Schema.Types.ObjectId, ref: 'Journey' },
-  channel: { type: String, enum: ['SMS', 'IN_APP'], required: true },
+  channel: { type: String, enum: ['SMS', 'PUSH', 'IN_APP'], required: true },
   status: { type: String, enum: ['QUEUED', 'SENT', 'DELIVERED', 'FAILED'], required: true },
   message: { type: String, required: true, maxlength: 1600 },
   providerId: String,

@@ -37,3 +37,12 @@ test('trial-recipient and blocked-country errors explain how to fix Twilio setti
   assert.match(explainTwilioError({ code: 21608 }, '+919876543210'), /verified recipients/);
   assert.match(explainTwilioError({ code: 21408 }, '+919876543210'), /destination country/);
 });
+
+test('predefined-template trial errors explain that custom SOS content needs an approved template or account upgrade', () => {
+  const message = explainTwilioError({
+    message: 'Invalid template name. Trial accounts can only use predefined SMS template',
+  }, '+919876543210');
+  assert.match(message, /trial account only permits predefined SMS templates/);
+  assert.match(message, /live-location link/);
+  assert.match(message, /Upgrade the provider account/);
+});
