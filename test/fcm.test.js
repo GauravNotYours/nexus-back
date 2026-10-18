@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { fcmConfiguration, registeredPushTokens, sendPush, sendPushWithMessaging } = require('../src/fcm');
+const { generateKeyPairSync } = require('node:crypto');
+const { fcmConfiguration, firebaseMessaging, registeredPushTokens, sendPush, sendPushWithMessaging } = require('../src/fcm');
 
 test('FCM configuration reports missing Firebase service-account values', () => {
   assert.deepEqual(fcmConfiguration({ FCM_PROJECT_ID: 'suraksha-test' }).missing, [
@@ -12,6 +13,20 @@ test('FCM configuration reports missing Firebase service-account values', () => 
     FCM_CLIENT_EMAIL: 'firebase-adminsdk@example.iam.gserviceaccount.com',
     FCM_PRIVATE_KEY: 'private-key',
   }).enabled, true);
+});
+
+test('Firebase Admin SDK initializes its default app using the supported app registry API', () => {
+  const { privateKey } = generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+  });
+  const messaging = firebaseMessaging({
+    FCM_PROJECT_ID: 'suraksha-test',
+    FCM_CLIENT_EMAIL: 'firebase-adminsdk@example.iam.gserviceaccount.com',
+    FCM_PRIVATE_KEY: privateKey,
+  });
+  assert.equal(typeof messaging.send, 'function');
 });
 
 test('registered push tokens tolerate missing or malformed legacy device arrays', () => {

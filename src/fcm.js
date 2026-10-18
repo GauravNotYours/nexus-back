@@ -1,4 +1,5 @@
-const admin = require('firebase-admin');
+const { cert, getApps, initializeApp } = require('firebase-admin/app');
+const { getMessaging } = require('firebase-admin/messaging');
 
 function fcmConfiguration(env = process.env) {
   const required = ['FCM_PROJECT_ID', 'FCM_CLIENT_EMAIL', 'FCM_PRIVATE_KEY'];
@@ -19,16 +20,17 @@ function firebaseMessaging(env = process.env) {
     throw new Error(`FCM is not configured. Missing environment variables: ${config.missing.join(', ')}.`);
   }
 
-  if (!admin.apps.length) {
-    admin.initializeApp({
-      credential: admin.credential.cert({
+  let app = getApps()[0];
+  if (!app) {
+    app = initializeApp({
+      credential: cert({
         projectId: env.FCM_PROJECT_ID,
         clientEmail: env.FCM_CLIENT_EMAIL,
         privateKey: env.FCM_PRIVATE_KEY.replace(/\\n/g, '\n'),
       }),
     });
   }
-  return admin.messaging();
+  return getMessaging(app);
 }
 
 async function sendPushWithMessaging(tokens, { title, body, url, emergencyId }, messaging) {
@@ -72,4 +74,4 @@ async function sendPush(tokens, payload, env = process.env) {
   return sendPushWithMessaging(tokens, payload, firebaseMessaging(env));
 }
 
-module.exports = { fcmConfiguration, registeredPushTokens, sendPush, sendPushWithMessaging };
+module.exports = { fcmConfiguration, firebaseMessaging, registeredPushTokens, sendPush, sendPushWithMessaging };
