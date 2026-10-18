@@ -98,6 +98,12 @@ async function notifyContactPush(ownerId, contact, message, related = {}, pushDa
   } catch (error) {
     notification.status = 'FAILED';
     notification.error = error.message || 'Firebase Cloud Messaging rejected the push notification.';
+    console.error('FCM delivery failed:', {
+      contactId: String(contact._id),
+      code: error.code || 'UNKNOWN',
+      message: notification.error,
+      stack: error.stack,
+    });
   }
   await notification.save();
   return {

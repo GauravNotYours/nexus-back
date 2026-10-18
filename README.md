@@ -4,7 +4,7 @@ Node.js/Express API backed by MongoDB. The API is the source of truth for accoun
 
 ## Run locally
 
-1. Install Node.js 20 or newer and create a MongoDB database (MongoDB Atlas free tier works).
+1. Install Node.js 22 or newer and create a MongoDB database (MongoDB Atlas free tier works). Firebase Admin SDK 14 requires Node.js 22+.
 2. In `back`, run `npm install`.
 3. Copy `.env.example` to `.env`; set `MONGODB_URI` and a long random `JWT_SECRET`.
 4. Run `npm run seed` once to add example emergency-service and risk-zone records. Review and replace those records with verified local information before relying on them.
@@ -38,6 +38,6 @@ Missed check-ins are processed by the backend job every 15 seconds: first the co
 
 ## Deploy on Render
 
-Create a **Web Service** for this folder. Set the root directory to `back`, build command to `npm install`, and start command to `npm start`. Configure `MONGODB_URI`, `JWT_SECRET`, `PUBLIC_BASE_URL` (the service's HTTPS URL), and optional Twilio credentials in Render's environment settings. After deployment, set `EXPO_PUBLIC_API_URL` in the mobile build to the Render service URL (no trailing slash).
+Create a **Web Service** for this folder. Set the root directory to `back`, build command to `npm install`, and start command to `npm start`. Ensure the Render service uses Node.js 22 or newer; Firebase Admin SDK 14 does not support older Node runtimes. Configure `MONGODB_URI`, `JWT_SECRET`, `PUBLIC_BASE_URL` (the service's HTTPS URL), and optional Twilio credentials in Render's environment settings. After deployment, set `EXPO_PUBLIC_API_URL` in the mobile build to the Render service URL (no trailing slash).
 
 The service directory contains sample records derived from the provided design sample; locations and contacts are not independently verified. Do not present them as authoritative emergency-service information without validating them.

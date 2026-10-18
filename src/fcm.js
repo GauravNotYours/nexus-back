@@ -40,6 +40,9 @@ async function sendPush(tokens, { title, body, url, emergencyId }, env = process
     data: { url: url || '', emergencyId: emergencyId || '' },
     android: { priority: 'high', notification: { channelId: 'emergency' } },
   });
+  if (!response || !Array.isArray(response.responses)) {
+    throw new Error('Firebase returned an invalid multicast response.');
+  }
   const invalidTokens = [];
   const errors = [];
   response.responses.forEach((result, index) => {
