@@ -31,34 +31,45 @@ function firebaseMessaging(env = process.env) {
   return admin.messaging();
 }
 
-async function sendPush(tokens, { title, body, url, emergencyId }, env = process.env) {
+async function sendPushWithMessaging(tokens, { title, body, url, emergencyId }, messaging) {
   if (!Array.isArray(tokens)) throw new TypeError('FCM device tokens must be an array.');
   if (!tokens.length) return { successCount: 0, failureCount: 0, invalidTokens: [], errors: [] };
-  const response = await firebaseMessaging(env).sendEachForMulticast({
-    tokens,
-    notification: { title, body },
-    data: { url: url || '', emergencyId: emergencyId || '' },
-    android: { priority: 'high', notification: { channelId: 'emergency' } },
-  });
-  if (!response || !Array.isArray(response.responses)) {
-    throw new Error('Firebase returned an invalid multicast response.');
-  }
+  if (tokens.length > 500) throw new RangeError('Firebase accepts at most 500 device tokens per send.');
+  const results = await Promise.all(tokens.map(async (token) => {
+    try {
+      await messaging.send({
+        token,
+        notification: { title, body },
+        data: { url: url || '', emergencyId: emergencyId || '' },
+        android: { priority: 'high', notification: { channelId: 'emergency' } },
+      });
+      return { token, success: true };
+    } catch (error) {
+      return { token, success: false, error };
+    }
+  }));
   const invalidTokens = [];
   const errors = [];
-  response.responses.forEach((result, index) => {
+  results.forEach((result) => {
     if (result.success) return;
     const code = result.error && result.error.code;
     if (code === 'messaging/invalid-registration-token' || code === 'messaging/registration-token-not-registered') {
-      invalidTokens.push(tokens[index]);
+      invalidTokens.push(result.token);
     }
     errors.push(result.error && result.error.message || 'Firebase rejected a push notification.');
   });
   return {
-    successCount: response.successCount,
-    failureCount: response.failureCount,
+    successCount: results.filter((result) => result.success).length,
+    failureCount: results.filter((result) => !result.success).length,
     invalidTokens,
     errors,
   };
 }
 
-module.exports = { fcmConfiguration, registeredPushTokens, sendPush };
+async function sendPush(tokens, payload, env = process.env) {
+  if (!Array.isArray(tokens)) throw new TypeError('FCM device tokens must be an array.');
+  if (!tokens.length) return { successCount: 0, failureCount: 0, invalidTokens: [], errors: [] };
+  return sendPushWithMessaging(tokens, payload, firebaseMessaging(env));
+}
+
+module.exports = { fcmConfiguration, registeredPushTokens, sendPush, sendPushWithMessaging };

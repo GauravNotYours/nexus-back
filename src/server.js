@@ -87,6 +87,12 @@ async function notifyContactPush(ownerId, contact, message, related = {}, pushDa
       url: pushData.url,
       emergencyId: pushData.emergencyId,
     });
+    if (result.failureCount) {
+      console.error('FCM delivery rejected for one or more devices:', {
+        contactId: String(contact._id),
+        errors: result.errors,
+      });
+    }
     if (result.invalidTokens.length) {
       recipient.pushTokens = (Array.isArray(recipient.pushTokens) ? recipient.pushTokens : [])
         .filter((device) => device && !result.invalidTokens.includes(device.token));
