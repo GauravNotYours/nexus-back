@@ -578,8 +578,16 @@ async function processEscalations() {
     ]);
     if (owner) {
       const last = changed.currentLocation;
-      const mapLink = last ? ` Location: https://maps.google.com/?q=${last.lat},${last.lng}` : '';
-      await notifyContact(changed.owner, contact, `Safety check-in missed: ${owner.name} has not checked in for their journey to ${changed.destination}.${mapLink}`, { journey: changed._id });
+      const navigationUrl = last
+        ? `https://www.google.com/maps/dir/?api=1&destination=${last.lat},${last.lng}`
+        : undefined;
+      const mapLink = navigationUrl ? ` Navigate to their last location: ${navigationUrl}` : '';
+      await notifyContact(
+        changed.owner,
+        contact,
+        `Safety check-in missed: ${owner.name} has not checked in for their journey to ${changed.destination}.${mapLink}`,
+        { journey: changed._id, ...(navigationUrl ? { url: navigationUrl } : {}) },
+      );
     }
   }
   const missed = await Journey.find({ status: 'MISSED_CHECKIN', escalationAt: { $lte: now } }).limit(100);
@@ -603,7 +611,16 @@ async function processEscalations() {
     if (owner) {
       const shareUrl = `${(process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, '')}/api/public/emergencies/${shareToken}`;
       const message = `URGENT: ${owner.name} did not respond to a safety check-in. Emergency escalation activated. Live location: ${shareUrl}`;
-      await Promise.all(contacts.map((contact) => notifyContact(changed.owner, contact, message, { journey: changed._id, emergency: emergency._id })));
+      const point = changed.currentLocation;
+      const navigationUrl = point
+        ? `https://www.google.com/maps/dir/?api=1&destination=${point.lat},${point.lng}`
+        : shareUrl;
+      await Promise.all(contacts.map((contact) => notifyContact(
+        changed.owner,
+        contact,
+        message,
+        { journey: changed._id, emergency: emergency._id, url: navigationUrl },
+      )));
     }
   }
 }

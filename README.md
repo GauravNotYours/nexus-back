@@ -34,7 +34,7 @@ For the backend deployed on Render, open the Web Service's **Environment** setti
 
 Create the Android Firebase app using package name `com.suraksha.safety`. Download `google-services.json` and configure the mobile app as described in `../front/README.md`. The Firebase Android client file is not a substitute for the private Admin SDK service-account key.
 
-Missed check-ins are processed by the backend job every 15 seconds: first the configured trusted contact is notified, then an emergency record is created after the grace period if the user still has not checked in. The user must start a safety journey and not check in for this to happen; the app cannot detect an emergency merely because it was closed. Keep the Render service running continuously for timely escalation. A sleeping or unavailable service cannot run the check-in timer.
+Missed check-ins are processed by the backend job every 15 seconds: first the configured trusted contact is notified, then an emergency record is created after the grace period if the user still has not checked in. Journey push notifications include a Google Maps directions link to the last saved location; escalation alerts use that map link and also include a live-location page in the notification message. Tapping a notification opens its link. The user must start a safety journey and not check in for this to happen; the app cannot detect an emergency merely because it was closed. Keep the Render service running continuously for timely escalation. A sleeping or unavailable service cannot run the check-in timer.
 
 ## Deploy on Render
 
