@@ -63,6 +63,8 @@ test('push messages are sent individually and aggregate per-device results', asy
   assert.equal(sent.length, 2);
   assert.equal(sent[0].notification.title, 'SOS');
   assert.equal(sent[0].data.url, 'https://example.test/location');
+  assert.equal(sent[0].android.notification.channelId, 'emergency-sound-v1');
+  assert.equal(sent[0].android.notification.sound, 'default');
   assert.deepEqual(result, {
     successCount: 1,
     failureCount: 1,

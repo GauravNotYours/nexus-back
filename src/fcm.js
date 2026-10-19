@@ -43,7 +43,7 @@ async function sendPushWithMessaging(tokens, { title, body, url, emergencyId }, 
         token,
         notification: { title, body },
         data: { url: url || '', emergencyId: emergencyId || '' },
-        android: { priority: 'high', notification: { channelId: 'emergency' } },
+        android: { priority: 'high', notification: { channelId: 'emergency-sound-v1', sound: 'default' } },
       });
       return { token, success: true };
     } catch (error) {
