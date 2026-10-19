@@ -95,6 +95,7 @@ const journeySchema = new mongoose.Schema({
   lastCheckInAt: Date,
   checkInsCompleted: { type: Number, default: 0 },
   currentLocation: coordinatesSchema,
+  shareToken: { type: String, unique: true, sparse: true, select: false },
   completedAt: Date,
 }, { timestamps: true });
 

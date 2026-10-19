@@ -46,6 +46,17 @@ const distanceKm = (a, b) => {
   const h = Math.sin(dLat / 2) ** 2 + Math.cos(radians(a.lat)) * Math.cos(radians(b.lat)) * Math.sin(dLng / 2) ** 2;
   return 6371 * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
 };
+function sendLiveLocationPage(res) {
+  res.set('Content-Security-Policy', "default-src 'none'; script-src 'unsafe-inline'; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
+  res.type('html').send(`<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><meta charset="utf-8"><title>Suraksha live location</title><body style="font:16px system-ui;max-width:560px;margin:40px auto;padding:0 20px;color:#241512"><h1>Suraksha live location</h1><p id="state">Loading latest location…</p><a id="map" rel="noopener noreferrer" target="_blank">Open latest position in Google Maps</a><p>Location checks refresh every 20 seconds while the journey or alert is active. The sender's Suraksha app must be running to upload new positions.</p><script>const state=document.getElementById('state'),map=document.getElementById('map');async function update(){try{const r=await fetch(location.pathname+'?format=json',{cache:'no-store'});if(!r.ok){state.textContent='This location share has expired or the journey/alert is no longer active.';map.hidden=true;return}const d=await r.json();if(!d.coordinates){state.textContent='The user has not shared a GPS fix yet.';return}const p=d.coordinates;state.textContent='Last location update: '+new Date(d.updatedAt).toLocaleString()+' · '+p.lat.toFixed(5)+', '+p.lng.toFixed(5);map.href='https://maps.google.com/?q='+encodeURIComponent(p.lat+','+p.lng)}catch{state.textContent='Unable to refresh. Check your connection.'}}update();setInterval(update,20000)</script></body></html>`);
+}
+async function ensureJourneyShareToken(journey) {
+  if (!journey.shareToken) {
+    journey.shareToken = crypto.randomBytes(32).toString('hex');
+    await journey.save();
+  }
+  return journey.shareToken;
+}
 
 function auth(req, res, next) {
   const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
@@ -379,8 +390,31 @@ router.get('/public/emergencies/:token', asyncRoute(async (req, res) => {
       activatedAt: emergency.activatedAt, updatedAt: emergency.updatedAt,
     });
   }
-  res.set('Content-Security-Policy', "default-src 'none'; script-src 'unsafe-inline'; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
-  res.type('html').send(`<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><meta charset="utf-8"><title>Suraksha live location</title><body style="font:16px system-ui;max-width:560px;margin:40px auto;padding:0 20px;color:#241512"><h1>Suraksha live location</h1><p id="state">Loading latest location…</p><a id="map" rel="noopener noreferrer" target="_blank">Open latest position in Google Maps</a><p>Location refreshes every 20 seconds while the alert is active.</p><script>const state=document.getElementById('state'),map=document.getElementById('map');async function update(){try{const r=await fetch(location.pathname+'?format=json',{cache:'no-store'});if(!r.ok){state.textContent='This location share has expired or the alert is no longer active.';map.hidden=true;return}const d=await r.json();if(!d.coordinates){state.textContent='The user has not shared a GPS fix yet.';return}const p=d.coordinates;state.textContent='Last location update: '+new Date(d.updatedAt).toLocaleString()+' · '+p.lat.toFixed(5)+', '+p.lng.toFixed(5);map.href='https://maps.google.com/?q='+encodeURIComponent(p.lat+','+p.lng)}catch{state.textContent='Unable to refresh. Check your connection.'}}update();setInterval(update,20000)</script></body></html>`);
+  sendLiveLocationPage(res);
+}));
+
+router.get('/public/journeys/:token', asyncRoute(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  if (!/^[a-f0-9]{64}$/.test(req.params.token)) throw fail(404, 'Journey location share not found or expired.');
+  const journey = await Journey.findOne({
+    shareToken: req.params.token, status: { $in: ['ACTIVE', 'MISSED_CHECKIN', 'ESCALATED'] },
+  }).select('+shareToken').lean();
+  if (!journey) throw fail(404, 'Journey location share not found or expired.');
+  if (req.query.format === 'json') {
+    if (journey.status === 'ESCALATED') {
+      const emergency = await Emergency.findOne({ journey: journey._id, status: 'ACTIVE' }).lean();
+      if (!emergency) throw fail(404, 'Journey location share not found or expired.');
+      return res.json({
+        status: emergency.status, coordinates: emergency.coordinates,
+        activatedAt: emergency.activatedAt, updatedAt: emergency.updatedAt,
+      });
+    }
+    return res.json({
+      status: journey.status, coordinates: journey.currentLocation,
+      startedAt: journey.startedAt, updatedAt: journey.updatedAt,
+    });
+  }
+  sendLiveLocationPage(res);
 }));
 
 router.post('/safety/score', auth, asyncRoute(async (req, res) => {
@@ -466,9 +500,12 @@ router.post('/journeys', auth, asyncRoute(async (req, res) => {
     estimatedMinutes: duration, checkInIntervalMinutes: interval, trustedContact: contact._id,
     startedAt: now, expectedArrivalAt: new Date(now.getTime() + duration * 60000),
     nextCheckInAt: new Date(now.getTime() + interval * 60000),
+    shareToken: crypto.randomBytes(32).toString('hex'),
     currentLocation: currentLocation ? coordinates(currentLocation) : undefined,
   });
-  res.status(201).json(journey);
+  const publicJourney = journey.toObject();
+  delete publicJourney.shareToken;
+  res.status(201).json(publicJourney);
 }));
 
 router.get('/journeys/active', auth, asyncRoute(async (req, res) => {
@@ -570,23 +607,21 @@ async function processEscalations() {
       { _id: journey._id, status: 'ACTIVE', nextCheckInAt: { $lte: now } },
       { $set: { status: 'MISSED_CHECKIN', escalationLevel: 1, escalationAt: new Date(now.getTime() + Number(process.env.ESCALATION_GRACE_MINUTES || 2) * 60000) } },
       { new: true },
-    );
+    ).select('+shareToken');
     if (!changed) continue;
     const [owner, contact] = await Promise.all([
       User.findById(changed.owner),
       TrustedContact.findOne({ _id: changed.trustedContact, notifyOnMissedCheckIn: true }),
     ]);
     if (owner) {
-      const last = changed.currentLocation;
-      const navigationUrl = last
-        ? `https://www.google.com/maps/dir/?api=1&destination=${last.lat},${last.lng}`
-        : undefined;
-      const mapLink = navigationUrl ? ` Navigate to their last location: ${navigationUrl}` : '';
+      const shareToken = await ensureJourneyShareToken(changed);
+      const journeyShareUrl = `${publicBaseUrl()}/api/public/journeys/${shareToken}`;
+      const mapLink = ` Live location: ${journeyShareUrl}`;
       await notifyContact(
         changed.owner,
         contact,
         `Safety check-in missed: ${owner.name} has not checked in for their journey to ${changed.destination}.${mapLink}`,
-        { journey: changed._id, ...(navigationUrl ? { url: navigationUrl } : {}) },
+        { journey: changed._id, url: journeyShareUrl },
       );
     }
   }
@@ -596,7 +631,7 @@ async function processEscalations() {
       { _id: journey._id, status: 'MISSED_CHECKIN', escalationAt: { $lte: now } },
       { $set: { status: 'ESCALATED', escalationLevel: 3 } },
       { new: true },
-    );
+    ).select('+shareToken');
     if (!changed) continue;
     const shareToken = crypto.randomBytes(32).toString('hex');
     const emergency = await Emergency.create({
@@ -611,15 +646,11 @@ async function processEscalations() {
     if (owner) {
       const shareUrl = `${(process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, '')}/api/public/emergencies/${shareToken}`;
       const message = `URGENT: ${owner.name} did not respond to a safety check-in. Emergency escalation activated. Live location: ${shareUrl}`;
-      const point = changed.currentLocation;
-      const navigationUrl = point
-        ? `https://www.google.com/maps/dir/?api=1&destination=${point.lat},${point.lng}`
-        : shareUrl;
       await Promise.all(contacts.map((contact) => notifyContact(
         changed.owner,
         contact,
         message,
-        { journey: changed._id, emergency: emergency._id, url: navigationUrl },
+        { journey: changed._id, emergency: emergency._id, url: shareUrl },
       )));
     }
   }
